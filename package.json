@@ -22,7 +22,9 @@
   "description": "To install dependencies:",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start:vanilla": "bun run --watch src/menu_app_vanilla.ts",
+    "start:vanilla-pro": "bun run --watch src/menu_app_vanilla_pro.ts",
+    "start:effect": "bun run --watch src/menu_app_effect.ts"
   },
   "keywords": [],
   "author": "",

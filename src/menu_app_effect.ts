@@ -1,12 +1,18 @@
-import * as Schema from "effect/Schema";
-import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
-import * as Data from "effect/Data";
-import * as Schedule from "effect/Schedule";
-import * as Duration from "effect/Duration";
-import * as ParseResult from "effect/ParseResult";
+import {
+  Deferred,
+  Logger,
+  Queue,
+  Random,
+  Stream,
+  Schema,
+  Effect,
+  Layer,
+  Data,
+  Schedule,
+  Duration,
+  ParseResult,
+} from "effect";
 import http from "http"; // Add Node.js http module
-import { Deferred, Queue, Scope, Stream } from "effect";
 
 // =============================================================================
 // SECTION 1: Errors (Using Data.TaggedError for typed errors)
@@ -60,7 +66,7 @@ const SectionSchema = Schema.Struct({
   magicCopyKey: Schema.optional(Schema.String),
   imageUrl: Schema.String.pipe(Schema.pattern(/^https?:\/\/.+/)), // Basic URL check
 });
-type Section = Schema.Schema.Type<typeof SectionSchema>;
+export type Section = Schema.Schema.Type<typeof SectionSchema>;
 
 const ItemSchema = Schema.Struct({
   id: Schema.NonEmptyString,
@@ -70,7 +76,7 @@ const ItemSchema = Schema.Struct({
   magicCopyKey: Schema.optional(Schema.String),
   imageUrl: Schema.String.pipe(Schema.pattern(/^https?:\/\/.+/)),
 });
-type Item = Schema.Schema.Type<typeof ItemSchema>;
+export type Item = Schema.Schema.Type<typeof ItemSchema>;
 
 const ModGroupSchema = Schema.Struct({
   id: Schema.NonEmptyString,
@@ -81,7 +87,7 @@ const ModGroupSchema = Schema.Struct({
     Schema.Number.pipe(Schema.int(), Schema.nonNegative())
   ),
 });
-type ModGroup = Schema.Schema.Type<typeof ModGroupSchema>;
+export type ModGroup = Schema.Schema.Type<typeof ModGroupSchema>;
 
 const ModSchema = Schema.Struct({
   id: Schema.NonEmptyString,
@@ -89,7 +95,7 @@ const ModSchema = Schema.Struct({
   modGroupIds: Schema.Array(Schema.String.pipe(Schema.minLength(1))),
   price: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
 });
-type Mod = Schema.Schema.Type<typeof ModSchema>;
+export type Mod = Schema.Schema.Type<typeof ModSchema>;
 
 const DiscountSchemaBase = Schema.Struct({
   id: Schema.NonEmptyString,
@@ -118,13 +124,13 @@ const DiscountSchema = Schema.Struct({
     }
   )
 );
-type Discount = Schema.Schema.Type<typeof DiscountSchema>;
+export type Discount = Schema.Schema.Type<typeof DiscountSchema>;
 
 const OrderTypeSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
 });
-type OrderType = Schema.Schema.Type<typeof OrderTypeSchema>;
+export type OrderType = Schema.Schema.Type<typeof OrderTypeSchema>;
 
 const MenuResponseSchema = Schema.Struct({
   sections: Schema.Array(SectionSchema),
@@ -134,7 +140,7 @@ const MenuResponseSchema = Schema.Struct({
   discounts: Schema.Array(DiscountSchema),
   orderTypes: Schema.Array(OrderTypeSchema),
 });
-type MenuResponse = Schema.Schema.Type<typeof MenuResponseSchema>;
+export type MenuResponse = Schema.Schema.Type<typeof MenuResponseSchema>;
 
 // --- Store Configuration Schema ---
 const StoreConfigSchema = Schema.Struct({
@@ -145,7 +151,7 @@ const StoreConfigSchema = Schema.Struct({
     Schema.annotations({ default: "USD" })
   ),
 });
-type StoreConfig = Schema.Schema.Type<typeof StoreConfigSchema>;
+export type StoreConfig = Schema.Schema.Type<typeof StoreConfigSchema>;
 
 // --- Domain Specific Schemas (used for transformation output type) ---
 const DomainCategorySchema = Schema.Struct({
@@ -154,7 +160,7 @@ const DomainCategorySchema = Schema.Struct({
   productIds: Schema.Array(Schema.String),
   imageUrl: Schema.optional(Schema.String),
 });
-type DomainCategory = Schema.Schema.Type<typeof DomainCategorySchema>;
+export type DomainCategory = Schema.Schema.Type<typeof DomainCategorySchema>;
 
 const DomainProductSchema = Schema.Struct({
   productId: Schema.String,
@@ -163,7 +169,7 @@ const DomainProductSchema = Schema.Struct({
   modifierGroupIds: Schema.Array(Schema.String),
   imageUrl: Schema.optional(Schema.String),
 });
-type DomainProduct = Schema.Schema.Type<typeof DomainProductSchema>;
+export type DomainProduct = Schema.Schema.Type<typeof DomainProductSchema>;
 
 const DomainModifierGroupSchema = Schema.Struct({
   groupId: Schema.String,
@@ -172,14 +178,16 @@ const DomainModifierGroupSchema = Schema.Struct({
   maxSelections: Schema.optional(Schema.Number),
   minSelections: Schema.optional(Schema.Number),
 });
-type DomainModifierGroup = Schema.Schema.Type<typeof DomainModifierGroupSchema>;
+export type DomainModifierGroup = Schema.Schema.Type<
+  typeof DomainModifierGroupSchema
+>;
 
 const DomainModifierSchema = Schema.Struct({
   modifierId: Schema.String,
   displayName: Schema.String,
   priceDelta: Schema.Number,
 });
-type DomainModifier = Schema.Schema.Type<typeof DomainModifierSchema>;
+export type DomainModifier = Schema.Schema.Type<typeof DomainModifierSchema>;
 
 const DomainMenuSchema = Schema.Struct({
   categories: Schema.Array(DomainCategorySchema),
@@ -187,14 +195,14 @@ const DomainMenuSchema = Schema.Struct({
   modifierGroups: Schema.Array(DomainModifierGroupSchema),
   modifiers: Schema.Array(DomainModifierSchema),
 });
-type DomainMenu = Schema.Schema.Type<typeof DomainMenuSchema>;
+export type DomainMenu = Schema.Schema.Type<typeof DomainMenuSchema>;
 
 // =============================================================================
 // SECTION 3: Services (Context)
 // =============================================================================
 
 // Helper to copy mock data into the layer definition
-const mockMenuData = {
+const getMockMenuData = () => ({
   sections: [
     {
       id: "sec1",
@@ -258,51 +266,47 @@ const mockMenuData = {
     { id: "ot1", name: "Dine In" },
     { id: "ot2", name: "Take Out" },
   ],
-};
-const mockConfigData = {
+});
+
+const getMockConfigData = () => ({
   storeId: "mock-restaurant",
   name: "The Mock Eatery",
   isOpen: Math.random() > 0.1,
   currency: "USD",
-};
+});
 
-const mockApiData: Record<string, unknown> = {
-  "/api/v1/menus/mock-restaurant": mockMenuData,
-  "/api/v1/config/mock-restaurant": mockConfigData,
-};
+const mockApiData = {
+  "/api/v1/menus/mock-restaurant": getMockMenuData,
+  "/api/v1/config/mock-restaurant": getMockConfigData,
+} as const;
 
 class HttpService extends Effect.Service<HttpService>()("HttpService", {
   sync: () => {
     return {
-      get: (
-        url: string,
+      get: Effect.fn("HttpService.get")(function* (
+        url: keyof typeof mockApiData,
         options: { timeout?: Duration.DurationInput } = {}
-      ) => {
+      ) {
         const { timeout = Duration.seconds(1) } = options;
 
         // Simulate fetch with potential errors, retry, and timeout using Effect operators
-        return Effect.suspend(() => {
-          console.log(`MockHttpService: GET ${url}`);
-          if (Math.random() < 0.2)
-            return Effect.fail(
-              new NetworkError({ message: "Simulated network flake", url })
-            );
-          if (!mockApiData[url])
-            return Effect.fail(
-              new NetworkError({
-                message: "Not found",
-                url,
-                cause: { status: 404 },
-              })
-            );
-          return Effect.succeed(
-            JSON.parse(JSON.stringify(mockApiData[url])) as unknown
-          );
+        return yield* Effect.gen(function* () {
+          yield* Effect.log(`MockHttpService: GET ${url}`);
+          const shouldFail = yield* Random.nextBoolean;
+          if (shouldFail) {
+            return yield* new NetworkError({
+              message: "Simulated network flake",
+              url,
+            });
+          }
+          return mockApiData[url]();
         }).pipe(
           Effect.delay(Duration.millis(50)), // Simulate base latency
           // Retry only on NetworkError (excluding 404)
           Effect.retry({
-            while: (error) => error._tag === "NetworkError",
+            while: (error) =>
+              error._tag === "NetworkError" &&
+              (error.cause as { status?: number })?.status !== 404,
             schedule: Schedule.union(
               Schedule.recurs(3),
               Schedule.exponential(Duration.millis(500))
@@ -320,7 +324,7 @@ class HttpService extends Effect.Service<HttpService>()("HttpService", {
             )
           )
         );
-      },
+      }),
     };
   },
 }) {}
@@ -553,7 +557,10 @@ const ServiceLayer = Layer.mergeAll(
 const AppLayer = Layer.provide(MenuQueueService.Default, ServiceLayer);
 
 // Define the Effect workflow with its dependencies provided
-const workflow = Effect.provide(getMenu, AppLayer);
+const workflow = getMenu.pipe(
+  Effect.provide(AppLayer)
+  //   Effect.provide(Logger.pretty)
+);
 
 // =============================================================================
 // SECTION 5: HTTP Server (Node.js http module)
