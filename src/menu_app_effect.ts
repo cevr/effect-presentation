@@ -495,7 +495,6 @@ class MenuQueueService extends Effect.Service<MenuQueueService>()(
   "MenuQueueService",
   {
     effect: Effect.gen(function* () {
-      const scope = yield* Scope.Scope;
       const queue = yield* Queue.unbounded<
         Deferred.Deferred<
           Effect.Effect.Success<typeof getMenuLogic>,
@@ -516,7 +515,7 @@ class MenuQueueService extends Effect.Service<MenuQueueService>()(
         )
       );
 
-      yield* Effect.forkIn(worker, scope);
+      yield* Effect.forkDaemon(worker);
 
       return {
         enqueue: Effect.fn("enqueue")(function* () {
@@ -551,10 +550,10 @@ const ServiceLayer = Layer.mergeAll(
   MenuTransformerService.Default
 );
 
+const AppLayer = Layer.provide(MenuQueueService.Default, ServiceLayer);
+
 // Define the Effect workflow with its dependencies provided
-const workflow = Effect.scoped(
-  Effect.provide(getMenu, Layer.provide(MenuQueueService.Default, ServiceLayer))
-);
+const workflow = Effect.provide(getMenu, AppLayer);
 
 // =============================================================================
 // SECTION 5: HTTP Server (Node.js http module)
