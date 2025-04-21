@@ -147,9 +147,7 @@ const StoreConfigSchema = Schema.Struct({
   storeId: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
   isOpen: Schema.Boolean,
-  currency: Schema.Literal("USD", "CAD", "EUR").pipe(
-    Schema.annotations({ default: "USD" })
-  ),
+  currency: Schema.Literal("USD", "CAD", "EUR"),
 });
 export type StoreConfig = Schema.Schema.Type<typeof StoreConfigSchema>;
 
