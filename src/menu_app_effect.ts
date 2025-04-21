@@ -6,6 +6,7 @@ import * as Schedule from "effect/Schedule";
 import * as Duration from "effect/Duration";
 import * as ParseResult from "effect/ParseResult";
 import http from "http"; // Add Node.js http module
+import { Deferred, Queue, Scope, Stream } from "effect";
 
 // =============================================================================
 // SECTION 1: Errors (Using Data.TaggedError for typed errors)
@@ -444,10 +445,6 @@ class MenuTransformerService extends Effect.Service<MenuTransformerService>()(
   }
 ) {}
 
-// =============================================================================
-// SECTION 4 : Core Business Logic (as an Effect)
-// =============================================================================
-
 const getMenuLogic = Effect.gen(function* () {
   yield* Effect.logInfo("MenuService: Starting menu retrieval...");
 
@@ -492,19 +489,72 @@ const getMenuLogic = Effect.gen(function* () {
   );
 
   return domainMenu;
-}).pipe(Effect.annotateLogs({ module: "MenuService" })); // Add context to logs
+}).pipe(Effect.annotateLogs({ module: "getMenuLogic" }));
+
+class MenuQueueService extends Effect.Service<MenuQueueService>()(
+  "MenuQueueService",
+  {
+    effect: Effect.gen(function* () {
+      const scope = yield* Scope.Scope;
+      const queue = yield* Queue.unbounded<
+        Deferred.Deferred<
+          Effect.Effect.Success<typeof getMenuLogic>,
+          MenuServiceError
+        >
+      >();
+
+      const worker = Effect.forever(
+        Stream.fromQueue(queue).pipe(
+          Stream.mapEffect((deferred) =>
+            getMenuLogic.pipe(
+              Effect.flatMap((menu) => Deferred.succeed(deferred, menu)),
+              Effect.catchAll((error) => Deferred.fail(deferred, error)),
+              Effect.catchAllDefect((error) => Deferred.die(deferred, error))
+            )
+          ),
+          Stream.runDrain
+        )
+      );
+
+      yield* Effect.forkIn(worker, scope);
+
+      return {
+        enqueue: Effect.fn("enqueue")(function* () {
+          const deferred = yield* Deferred.make<
+            Effect.Effect.Success<typeof getMenuLogic>,
+            MenuServiceError
+          >();
+          yield* Queue.offer(queue, deferred);
+          return yield* Deferred.await(deferred);
+        }),
+      };
+    }),
+  }
+) {}
+
+// =============================================================================
+// SECTION 4 : Core Business Logic (as an Effect)
+// =============================================================================
 
 // --- Combined Application Layer ---
 // make note of the requirements for the layer to show the dependencies
 // if they are not provided in order, typescript will not be happy
-const AppLayer = Layer.mergeAll(
+
+const getMenu = Effect.gen(function* () {
+  const menuQueue = yield* MenuQueueService;
+  return yield* menuQueue.enqueue();
+}).pipe(Effect.annotateLogs({ module: "getMenu" }));
+
+const ServiceLayer = Layer.mergeAll(
   Layer.provideMerge(PosApiService.Default, HttpService.Default),
   MenuParserService.Default,
   MenuTransformerService.Default
 );
 
 // Define the Effect workflow with its dependencies provided
-const workflow = Effect.provide(getMenuLogic, AppLayer);
+const workflow = Effect.scoped(
+  Effect.provide(getMenu, Layer.provide(MenuQueueService.Default, ServiceLayer))
+);
 
 // =============================================================================
 // SECTION 5: HTTP Server (Node.js http module)
