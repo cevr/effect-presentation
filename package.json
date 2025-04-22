@@ -12,9 +12,16 @@
   },
   "dependencies": {
     "@effect/language-service": "^0.7.1",
+    "@effect/opentelemetry": "^0.46.7",
     "@effect/platform": "^0.80.11",
     "@effect/platform-bun": "^0.60.21",
     "@effect/schema": "^0.75.5",
+    "@opentelemetry/sdk-logs": "^0.200.0",
+    "@opentelemetry/sdk-metrics": "^2.0.0",
+    "@opentelemetry/sdk-trace-base": "^2.0.0",
+    "@opentelemetry/sdk-trace-node": "^2.0.0",
+    "@opentelemetry/sdk-trace-web": "^2.0.0",
+    "@sentry/opentelemetry": "^9.13.0",
     "effect": "^3.14.11",
     "zod": "^3.24.3"
   },

@@ -1,3 +1,5 @@
+import { NodeSdk } from "@effect/opentelemetry";
+import { SentrySpanProcessor } from "@sentry/opentelemetry";
 import {
   Deferred,
   Logger,
@@ -11,6 +13,7 @@ import {
   Schedule,
   Duration,
   ParseResult,
+  ManagedRuntime,
 } from "effect";
 import http from "http"; // Add Node.js http module
 
@@ -21,8 +24,8 @@ import http from "http"; // Add Node.js http module
 class NetworkError extends Schema.TaggedError<NetworkError>("NetworkError")(
   "NetworkError",
   {
-    message: Schema.String,
-    url: Schema.String,
+    message: Schema.NonEmptyString,
+    url: Schema.NonEmptyString,
     cause: Schema.Unknown.pipe(Schema.optional),
   }
 ) {
@@ -32,8 +35,8 @@ class NetworkError extends Schema.TaggedError<NetworkError>("NetworkError")(
 class NetworkFailure extends Schema.TaggedError<NetworkFailure>(
   "NetworkFailure"
 )("NetworkFailure", {
-  message: Schema.String,
-  url: Schema.String,
+  message: Schema.NonEmptyString,
+  url: Schema.NonEmptyString,
   cause: Schema.Unknown.pipe(Schema.optional),
 }) {
   static is = Schema.is(this);
@@ -43,8 +46,6 @@ class TimeoutError extends Data.TaggedError("TimeoutError")<{
   url: string;
   timeoutMs: number;
 }> {}
-
-// Use ParseResult.ParseError for validation errors from @effect/schema
 
 class TransformationError extends Data.TaggedError("TransformationError")<{
   message: string;
@@ -111,16 +112,6 @@ const ModSchema = Schema.Struct({
   price: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
 });
 export type Mod = Schema.Schema.Type<typeof ModSchema>;
-
-const DiscountSchemaBase = Schema.Struct({
-  id: Schema.NonEmptyString,
-  name: Schema.NonEmptyString,
-  amount: Schema.optional(Schema.Number.pipe(Schema.int(), Schema.positive())),
-  rate: Schema.optional(
-    Schema.Number.pipe(Schema.positive(), Schema.lessThanOrEqualTo(1))
-  ),
-  couponCode: Schema.optional(Schema.String),
-});
 
 const DiscountSchema = Schema.Struct({
   id: Schema.NonEmptyString,
@@ -529,6 +520,8 @@ class MenuQueueService extends Effect.Service<MenuQueueService>()(
         Deferred.Deferred<DomainMenu, MenuServiceError>
       >();
 
+      yield* Effect.log("MenuQueueService: Starting queue service...");
+
       const worker = Effect.forever(
         Stream.fromQueue(queue).pipe(
           Stream.mapEffect((deferred) =>
@@ -575,35 +568,61 @@ const ServiceLayer = Layer.mergeAll(
   MenuTransformerService.Default
 );
 
-const AppLayer = Layer.provide(MenuQueueService.Default, ServiceLayer);
+// Set up tracing with the OpenTelemetry SDK
+const NodeSdkLive = NodeSdk.layer(() => ({
+  resource: { serviceName: "test-service" },
+  // Export span data to the console
+  spanProcessor: new SentrySpanProcessor(),
+}));
 
-// Define the Effect workflow with its dependencies provided
-const workflow = getMenu.pipe(
-  Effect.provide(AppLayer)
-  //   Effect.provide(Logger.pretty)
+const AppLayer = Layer.provide(MenuQueueService.Default, ServiceLayer).pipe(
+  Layer.provide(NodeSdkLive)
+  //   Layer.provide(Logger.pretty)
 );
+
+const runtime = ManagedRuntime.make(AppLayer);
 
 // =============================================================================
 // SECTION 5: HTTP Server (Node.js http module)
 // =============================================================================
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   if (req.url === "/menu" && req.method === "GET") {
     console.log("Server: Received GET /menu request.");
 
     // Execute the Effect workflow
-    runEffect(workflow).then((domainMenu) => {
-      // Handle success
-      if (domainMenu.type === "Ok") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(domainMenu.value, null, 2));
-      } else {
-        res.writeHead(domainMenu.error.statusCode, {
-          "Content-Type": "application/json",
-        });
-        res.end(JSON.stringify(domainMenu.error.body, null, 2));
-      }
-    });
+    const result = await runtime.runPromise(
+      getMenu.pipe(
+        Effect.map((domainMenu) => ({
+          type: "Ok" as const,
+          value: domainMenu,
+        })),
+        Effect.catchAll((error) => {
+          return Effect.succeed({
+            type: "Err" as const,
+            error: mapMenuServiceErrorToResponse(error),
+          });
+        }),
+        Effect.catchAllDefect(() => {
+          return Effect.succeed({
+            type: "Err" as const,
+            error: {
+              statusCode: 500,
+              body: { message: "Internal server error" },
+            },
+          });
+        })
+      )
+    );
+    if (result.type === "Ok") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result.value, null, 2));
+    } else {
+      res.writeHead(result.error.statusCode, {
+        "Content-Type": "application/json",
+      });
+      res.end(JSON.stringify(result.error.body, null, 2));
+    }
   } else {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ message: "Not Found" }));
@@ -620,51 +639,8 @@ server.on("error", (error) => {
   console.error("Node Server error:", error);
 });
 
-type EffectResult<Value> =
-  | { type: "Ok"; value: Value }
-  | {
-      type: "Err";
-      error: {
-        statusCode: number;
-        body: {
-          message: string;
-          details?: Record<string, unknown>;
-        };
-      };
-    };
-
-function runEffect<Value>(
-  effect: Effect.Effect<Value, MenuServiceError, never>
-): Promise<EffectResult<Value>> {
-  return Effect.runPromise(
-    effect.pipe(
-      Effect.map((domainMenu) => ({
-        type: "Ok" as const,
-        value: domainMenu,
-      })),
-      Effect.catchAll((error) => {
-        return Effect.succeed({
-          type: "Err" as const,
-          error: mapMenuServiceErrorToResponse(error),
-        });
-      }),
-      Effect.catchAllDefect(() => {
-        return Effect.succeed({
-          type: "Err" as const,
-          error: {
-            statusCode: 500,
-            body: { message: "Internal server error" },
-          },
-        });
-      })
-    )
-  );
-}
-
 // Helper function to map Effect errors to HTTP responses
 const mapMenuServiceErrorToResponse = (error: MenuServiceError) => {
-  console.error("Server: Error processing request:", error);
-
   let statusCode = 500;
   let body: {
     message: string;
@@ -712,7 +688,6 @@ const mapMenuServiceErrorToResponse = (error: MenuServiceError) => {
     default: {
       error satisfies never;
       statusCode = 500;
-      body = { message: "Internal server error" };
     }
   }
 
@@ -721,13 +696,3 @@ const mapMenuServiceErrorToResponse = (error: MenuServiceError) => {
     body,
   };
 };
-
-// SECTION 6: Effect Version Benefits
-/*
- * Comparison to vanilla_pro.ts:
- * - Core logic is declarative Effect workflow (getMenuLogic).
- * - Dependencies managed via Layer.
- * - Error handling, validation, retry, timeout handled by Effect operators within services/logic.
- * - HTTP server is now standard Node.js, but it simply executes the Effect program.
- * - Demonstrates how Effect logic can be run in different environments (Node.js server here).
- */
