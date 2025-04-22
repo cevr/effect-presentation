@@ -18,11 +18,26 @@ import http from "http"; // Add Node.js http module
 // SECTION 1: Errors (Using Data.TaggedError for typed errors)
 // =============================================================================
 
-class NetworkError extends Data.TaggedError("NetworkError")<{
-  message: string;
-  url: string;
-  cause?: unknown;
-}> {}
+class NetworkError extends Schema.TaggedError<NetworkError>("NetworkError")(
+  "NetworkError",
+  {
+    message: Schema.String,
+    url: Schema.String,
+    cause: Schema.Unknown.pipe(Schema.optional),
+  }
+) {
+  static is = Schema.is(this);
+}
+
+class NetworkFailure extends Schema.TaggedError<NetworkFailure>(
+  "NetworkFailure"
+)("NetworkFailure", {
+  message: Schema.String,
+  url: Schema.String,
+  cause: Schema.Unknown.pipe(Schema.optional),
+}) {
+  static is = Schema.is(this);
+}
 
 class TimeoutError extends Data.TaggedError("TimeoutError")<{
   url: string;
@@ -46,7 +61,7 @@ class StoreClosedError extends Data.TaggedError("StoreClosedError")<{
 }> {}
 
 // Combine potential errors for different layers
-type HttpServiceError = NetworkError | TimeoutError;
+type HttpServiceError = NetworkError | TimeoutError | NetworkFailure;
 type PosApiServiceError = PosApiError | HttpServiceError;
 type MenuServiceError =
   | PosApiServiceError
@@ -290,8 +305,16 @@ class HttpService extends Effect.Service<HttpService>()("HttpService", {
         // Simulate fetch with potential errors, retry, and timeout using Effect operators
         return yield* Effect.gen(function* () {
           yield* Effect.log(`MockHttpService: GET ${url}`);
-          const shouldFail = yield* Random.nextBoolean;
+          const randomNumber = yield* Random.nextIntBetween(0, 100);
+          const shouldFail = randomNumber <= 10;
+          const shouldTimeout = randomNumber <= 40;
           if (shouldFail) {
+            return yield* new NetworkFailure({
+              message: "Simulated network failure",
+              url,
+            });
+          }
+          if (shouldTimeout) {
             return yield* new NetworkError({
               message: "Simulated network flake",
               url,
@@ -300,16 +323,21 @@ class HttpService extends Effect.Service<HttpService>()("HttpService", {
           return mockApiData[url]();
         }).pipe(
           Effect.delay(Duration.millis(50)), // Simulate base latency
-          // Retry only on NetworkError (excluding 404)
+          // Retry only on NetworkError
           Effect.retry({
-            while: (error) =>
-              error._tag === "NetworkError" &&
-              (error.cause as { status?: number })?.status !== 404,
-            schedule: Schedule.union(
-              Schedule.recurs(3),
-              Schedule.exponential(Duration.millis(500))
+            while: NetworkError.is,
+            schedule: Schedule.tapOutput(
+              Schedule.intersect(
+                Schedule.recurs(3),
+                Schedule.exponential(Duration.millis(500))
+              ),
+              ([n, d]) =>
+                Effect.log(
+                  `[RETRY] Retrying ${n + 1} of 3 in ${Duration.toMillis(d)}ms`
+                )
             ),
           }),
+
           Effect.timeoutFail({
             duration: timeout,
             onTimeout: () =>
@@ -338,7 +366,7 @@ class PosApiService extends Effect.Service<PosApiService>()("PosApiService", {
         yield* Effect.log("PosApiService: Fetching menu...");
         const menu = yield* httpService
           .get("/api/v1/menus/mock-restaurant", {
-            timeout: Duration.millis(1500),
+            timeout: Duration.millis(2000),
           })
           .pipe(
             Effect.mapError(
@@ -352,7 +380,7 @@ class PosApiService extends Effect.Service<PosApiService>()("PosApiService", {
         yield* Effect.log("PosApiService: Fetching store config...");
         const config = yield* httpService
           .get("/api/v1/config/mock-restaurant", {
-            timeout: Duration.millis(1500),
+            timeout: Duration.millis(2000),
           })
           .pipe(
             Effect.mapError(
@@ -498,10 +526,7 @@ class MenuQueueService extends Effect.Service<MenuQueueService>()(
   {
     effect: Effect.gen(function* () {
       const queue = yield* Queue.unbounded<
-        Deferred.Deferred<
-          Effect.Effect.Success<typeof getMenuLogic>,
-          MenuServiceError
-        >
+        Deferred.Deferred<DomainMenu, MenuServiceError>
       >();
 
       const worker = Effect.forever(
@@ -521,10 +546,7 @@ class MenuQueueService extends Effect.Service<MenuQueueService>()(
 
       return {
         enqueue: Effect.fn("enqueue")(function* () {
-          const deferred = yield* Deferred.make<
-            Effect.Effect.Success<typeof getMenuLogic>,
-            MenuServiceError
-          >();
+          const deferred = yield* Deferred.make<DomainMenu, MenuServiceError>();
           yield* Queue.offer(queue, deferred);
           return yield* Deferred.await(deferred);
         }),
@@ -543,6 +565,7 @@ class MenuQueueService extends Effect.Service<MenuQueueService>()(
 
 const getMenu = Effect.gen(function* () {
   const menuQueue = yield* MenuQueueService;
+  yield* Effect.log("getMenu: Enqueuing menu request...");
   return yield* menuQueue.enqueue();
 }).pipe(Effect.annotateLogs({ module: "getMenu" }));
 
@@ -656,6 +679,10 @@ const mapMenuServiceErrorToResponse = (error: MenuServiceError) => {
     case "NetworkError":
       statusCode = 502;
       body = { message: `Upstream network error: ${error.url}` };
+      break;
+    case "NetworkFailure":
+      statusCode = 502;
+      body = { message: `Upstream network failure: ${error.url}` };
       break;
     case "StoreClosedError":
       statusCode = 409;
