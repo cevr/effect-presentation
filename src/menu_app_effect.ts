@@ -531,11 +531,21 @@ class MenuQueueService extends Effect.Service<MenuQueueService>()(
 
       const worker = Effect.forever(
         Stream.fromQueue(queue).pipe(
-          Stream.mapEffect((deferred) =>
-            getMenuLogic().pipe(
-              Effect.flatMap((menu) => Deferred.succeed(deferred, menu)),
-              Effect.catchAll((error) => Deferred.fail(deferred, error)),
-              Effect.catchAllDefect((error) => Deferred.die(deferred, error))
+          Stream.groupedWithin(3, Duration.millis(50)),
+          Stream.mapEffect((items) =>
+            Effect.forEach(
+              items,
+              (deferred) =>
+                getMenuLogic().pipe(
+                  Effect.flatMap((menu) => Deferred.succeed(deferred, menu)),
+                  Effect.catchAll((error) => Deferred.fail(deferred, error)),
+                  Effect.catchAllDefect((error) =>
+                    Deferred.die(deferred, error)
+                  )
+                ),
+              {
+                concurrency: "unbounded",
+              }
             )
           ),
           Stream.runDrain
