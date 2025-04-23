@@ -1,4 +1,6 @@
 import { NodeSdk } from "@effect/opentelemetry";
+import { ConsoleSpanExporter } from "@opentelemetry/sdk-trace-base";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { SentrySpanProcessor } from "@sentry/opentelemetry";
 import {
   Deferred,
@@ -285,64 +287,63 @@ const mockApiData = {
 } as const;
 
 class HttpService extends Effect.Service<HttpService>()("HttpService", {
-  sync: () => {
-    return {
-      get: Effect.fn("HttpService.get")(function* (
-        url: keyof typeof mockApiData,
-        options: { timeout?: Duration.DurationInput } = {}
-      ) {
-        const { timeout = Duration.seconds(1) } = options;
+  succeed: {
+    get: Effect.fn("HttpService.get")(function* (
+      url: keyof typeof mockApiData,
+      options: { timeout?: Duration.DurationInput } = {}
+    ) {
+      const { timeout = Duration.seconds(1) } = options;
 
-        // Simulate fetch with potential errors, retry, and timeout using Effect operators
-        return yield* Effect.gen(function* () {
-          yield* Effect.log(`MockHttpService: GET ${url}`);
-          const randomNumber = yield* Random.nextIntBetween(0, 100);
-          const shouldFail = randomNumber <= 10;
-          const shouldTimeout = randomNumber <= 40;
-          if (shouldFail) {
-            return yield* new NetworkFailure({
-              message: "Simulated network failure",
-              url,
-            });
-          }
-          if (shouldTimeout) {
-            return yield* new NetworkError({
-              message: "Simulated network flake",
-              url,
-            });
-          }
-          return mockApiData[url]();
-        }).pipe(
-          Effect.delay(Duration.millis(50)), // Simulate base latency
-          // Retry only on NetworkError
-          Effect.retry({
-            while: NetworkError.is,
-            schedule: Schedule.tapOutput(
-              Schedule.intersect(
-                Schedule.recurs(3),
-                Schedule.exponential(Duration.millis(500))
-              ),
-              ([n, d]) =>
-                Effect.log(
-                  `[RETRY] Retrying ${n + 1} of 3 in ${Duration.toMillis(d)}ms`
-                )
+      // Simulate fetch with potential errors, retry, and timeout using Effect operators
+      return yield* Effect.gen(function* () {
+        yield* Effect.log(`MockHttpService: GET ${url}`);
+        const randomNumber = yield* Random.nextIntBetween(0, 100);
+        const shouldFail = randomNumber <= 10;
+        const shouldTimeout = randomNumber <= 40;
+        if (shouldFail) {
+          return yield* new NetworkFailure({
+            message: "Simulated network failure",
+            url,
+          });
+        }
+        if (shouldTimeout) {
+          return yield* new NetworkError({
+            message: "Simulated network flake",
+            url,
+          });
+        }
+        return mockApiData[url]();
+      }).pipe(
+        Effect.delay(Duration.millis(50)), // Simulate base latency
+        // Retry only on NetworkError
+        Effect.retry({
+          while: NetworkError.is,
+          schedule: Schedule.tapOutput(
+            Schedule.intersect(
+              Schedule.recurs(3),
+              Schedule.exponential(Duration.millis(500))
             ),
-          }),
+            ([n, d]) =>
+              Effect.log(
+                `[RETRY] Retrying ${n + 1} of 3 in ${Duration.toMillis(d)}ms`
+              )
+          ),
+        }),
 
-          Effect.timeoutFail({
-            duration: timeout,
-            onTimeout: () =>
-              new TimeoutError({ url, timeoutMs: Duration.toMillis(timeout) }),
-          }),
-          // Log errors during retry attempts
-          Effect.tapError((e) =>
-            Effect.logWarning(
-              `MockHttpService: Attempt failed for ${url}. Reason: ${e._tag}`
-            )
+        Effect.timeoutFail({
+          duration: timeout,
+          onTimeout: () =>
+            new TimeoutError({ url, timeoutMs: Duration.toMillis(timeout) }),
+        }),
+        // Log errors during retry attempts
+        Effect.tapError((e) =>
+          Effect.logWarning(
+            `MockHttpService: Attempt failed for ${url}. Reason: ${e._tag}`
           )
-        );
-      }),
-    };
+        )
+      );
+    },
+    Effect.withLogSpan("HttpService.get")),
   },
 }) {}
 
@@ -353,7 +354,7 @@ class PosApiService extends Effect.Service<PosApiService>()("PosApiService", {
   effect: Effect.gen(function* () {
     const httpService = yield* HttpService;
     return {
-      fetchMenu: Effect.fn("fetchMenu")(function* () {
+      fetchMenu: Effect.fn("PosApiService.fetchMenu")(function* () {
         yield* Effect.log("PosApiService: Fetching menu...");
         const menu = yield* httpService
           .get("/api/v1/menus/mock-restaurant", {
@@ -366,24 +367,27 @@ class PosApiService extends Effect.Service<PosApiService>()("PosApiService", {
             )
           );
         return menu;
-      }),
-      fetchStoreConfig: Effect.fn("fetchStoreConfig")(function* () {
-        yield* Effect.log("PosApiService: Fetching store config...");
-        const config = yield* httpService
-          .get("/api/v1/config/mock-restaurant", {
-            timeout: Duration.millis(2000),
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new PosApiError({
-                  message: "Failed to fetch store config",
-                  cause,
-                })
-            )
-          );
-        return config;
-      }),
+      }, Effect.withLogSpan("PosApiService.fetchMenu")),
+      fetchStoreConfig: Effect.fn("PosApiService.fetchStoreConfig")(
+        function* () {
+          yield* Effect.log("PosApiService: Fetching store config...");
+          const config = yield* httpService
+            .get("/api/v1/config/mock-restaurant", {
+              timeout: Duration.millis(2000),
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PosApiError({
+                    message: "Failed to fetch store config",
+                    cause,
+                  })
+              )
+            );
+          return config;
+        },
+        Effect.withLogSpan("PosApiService.fetchStoreConfig")
+      ),
     };
   }),
 }) {}
@@ -394,14 +398,15 @@ class MenuParserService extends Effect.Service<MenuParserService>()(
   "MenuParserService",
   {
     succeed: {
-      parseMenuResponse: Effect.fn("parseMenuResponse")(function* (
-        data: unknown
-      ) {
-        yield* Effect.log("MenuParserService: Parsing menu response...");
-        return yield* Schema.decodeUnknown(MenuResponseSchema)(data).pipe(
-          Effect.tap(() => Effect.logDebug("Parsed menu response"))
-        );
-      }),
+      parseMenuResponse: Effect.fn("MenuParserService.parseMenuResponse")(
+        function* (data: unknown) {
+          yield* Effect.log("MenuParserService: Parsing menu response...");
+          return yield* Schema.decodeUnknown(MenuResponseSchema)(data).pipe(
+            Effect.tap(() => Effect.logDebug("Parsed menu response"))
+          );
+        },
+        Effect.withLogSpan("MenuParserService.parseMenuResponse")
+      ),
       parseStoreConfig: Effect.fn("parseStoreConfig")(function* (
         data: unknown
       ) {
@@ -409,7 +414,8 @@ class MenuParserService extends Effect.Service<MenuParserService>()(
         return yield* Schema.decodeUnknown(StoreConfigSchema)(data).pipe(
           Effect.tap(() => Effect.logDebug("Parsed store config"))
         );
-      }),
+      },
+      Effect.withLogSpan("MenuParserService.parseStoreConfig")),
     },
   }
 ) {}
@@ -420,7 +426,7 @@ class MenuTransformerService extends Effect.Service<MenuTransformerService>()(
   "MenuTransformerService",
   {
     succeed: {
-      transform: Effect.fn("transform")(function* (
+      transform: Effect.fn("MenuTransformerService.transform")(function* (
         posMenu: MenuResponse,
         config: StoreConfig
       ) {
@@ -461,12 +467,13 @@ class MenuTransformerService extends Effect.Service<MenuTransformerService>()(
               cause,
             }),
         });
-      }),
+      },
+      Effect.withLogSpan("MenuTransformerService.transform")),
     },
   }
 ) {}
 
-const getMenuLogic = Effect.gen(function* () {
+const getMenuLogic = Effect.fn("getMenuLogic")(function* () {
   yield* Effect.logInfo("MenuService: Starting menu retrieval...");
 
   const posApi = yield* PosApiService;
@@ -510,7 +517,7 @@ const getMenuLogic = Effect.gen(function* () {
   );
 
   return domainMenu;
-}).pipe(Effect.annotateLogs({ module: "getMenuLogic" }));
+}, Effect.withLogSpan("getMenuLogic"));
 
 class MenuQueueService extends Effect.Service<MenuQueueService>()(
   "MenuQueueService",
@@ -525,7 +532,7 @@ class MenuQueueService extends Effect.Service<MenuQueueService>()(
       const worker = Effect.forever(
         Stream.fromQueue(queue).pipe(
           Stream.mapEffect((deferred) =>
-            getMenuLogic.pipe(
+            getMenuLogic().pipe(
               Effect.flatMap((menu) => Deferred.succeed(deferred, menu)),
               Effect.catchAll((error) => Deferred.fail(deferred, error)),
               Effect.catchAllDefect((error) => Deferred.die(deferred, error))
@@ -542,7 +549,7 @@ class MenuQueueService extends Effect.Service<MenuQueueService>()(
           const deferred = yield* Deferred.make<DomainMenu, MenuServiceError>();
           yield* Queue.offer(queue, deferred);
           return yield* Deferred.await(deferred);
-        }),
+        }, Effect.withLogSpan("MenuQueueService.enqueue")),
       };
     }),
   }
@@ -556,11 +563,11 @@ class MenuQueueService extends Effect.Service<MenuQueueService>()(
 // make note of the requirements for the layer to show the dependencies
 // if they are not provided in order, typescript will not be happy
 
-const getMenu = Effect.gen(function* () {
+const getMenu = Effect.fn("getMenu")(function* () {
   const menuQueue = yield* MenuQueueService;
   yield* Effect.log("getMenu: Enqueuing menu request...");
   return yield* menuQueue.enqueue();
-}).pipe(Effect.annotateLogs({ module: "getMenu" }));
+}, Effect.withLogSpan("getMenu"));
 
 const ServiceLayer = Layer.mergeAll(
   Layer.provideMerge(PosApiService.Default, HttpService.Default),
@@ -570,14 +577,15 @@ const ServiceLayer = Layer.mergeAll(
 
 // Set up tracing with the OpenTelemetry SDK
 const NodeSdkLive = NodeSdk.layer(() => ({
-  resource: { serviceName: "test-service" },
+  resource: { serviceName: "menu-service" },
   // Export span data to the console
-  spanProcessor: new SentrySpanProcessor(),
+  spanProcessor: new BatchSpanProcessor(new ConsoleSpanExporter()),
+  // spanProcessor: new SentrySpanProcessor(),
 }));
 
 const AppLayer = Layer.provide(MenuQueueService.Default, ServiceLayer).pipe(
-  Layer.provide(NodeSdkLive)
-  //   Layer.provide(Logger.pretty)
+  // Layer.provide(NodeSdkLive)
+  // Layer.provide(Logger.pretty)
 );
 
 const runtime = ManagedRuntime.make(AppLayer);
@@ -592,7 +600,7 @@ const server = http.createServer(async (req, res) => {
 
     // Execute the Effect workflow
     const result = await runtime.runPromise(
-      getMenu.pipe(
+      getMenu().pipe(
         Effect.map((domainMenu) => ({
           type: "Ok" as const,
           value: domainMenu,
