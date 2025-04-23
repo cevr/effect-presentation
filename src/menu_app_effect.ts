@@ -474,6 +474,7 @@ class MenuTransformerService extends Effect.Service<MenuTransformerService>()(
   }
 ) {}
 
+// Effect.Effect<FinalValue, Errors, Requirements (context)>
 const getMenuLogic = Effect.fn("getMenuLogic")(function* () {
   yield* Effect.logInfo("MenuService: Starting menu retrieval...");
 
@@ -485,7 +486,7 @@ const getMenuLogic = Effect.fn("getMenuLogic")(function* () {
   const [rawMenuData, rawConfigData] = yield* Effect.all(
     [posApi.fetchMenu(), posApi.fetchStoreConfig()],
     {
-      concurrency: "inherit",
+      concurrency: "unbounded",
     }
   );
   yield* Effect.logDebug("MenuService: Fetched data in parallel.");
@@ -600,13 +601,13 @@ const ServiceLayer = Layer.mergeAll(
 const NodeSdkLive = NodeSdk.layer(() => ({
   resource: { serviceName: "menu-service" },
   // Export span data to the console
-  spanProcessor: new BatchSpanProcessor(new ConsoleSpanExporter()),
+  // spanProcessor: new BatchSpanProcessor(new ConsoleSpanExporter()),
   // spanProcessor: new SentrySpanProcessor(),
 }));
 
 const AppLayer = Layer.provide(MenuQueueService.Default, ServiceLayer).pipe(
-  Layer.provide(Layer.scope)
-  // Layer.provide(NodeSdkLive)
+  Layer.provide(Layer.scope),
+  Layer.provide(NodeSdkLive)
   // Layer.provide(Logger.pretty)
 );
 
