@@ -566,7 +566,9 @@ class MenuQueueService extends Effect.Service<MenuQueueService>()(
 const getMenu = Effect.fn("getMenu")(function* () {
   const menuQueue = yield* MenuQueueService;
   yield* Effect.log("getMenu: Enqueuing menu request...");
-  return yield* menuQueue.enqueue();
+  const menu = yield* menuQueue.enqueue();
+  yield* Effect.log("getMenu: Menu retrieved from queue");
+  return menu;
 }, Effect.withLogSpan("getMenu"));
 
 const ServiceLayer = Layer.mergeAll(
@@ -583,10 +585,11 @@ const NodeSdkLive = NodeSdk.layer(() => ({
   // spanProcessor: new SentrySpanProcessor(),
 }));
 
-const AppLayer = Layer.provide(MenuQueueService.Default, ServiceLayer).pipe(
+const AppLayer = Layer.provide(MenuQueueService.Default, ServiceLayer)
+  .pipe
   // Layer.provide(NodeSdkLive)
   // Layer.provide(Logger.pretty)
-);
+  ();
 
 const runtime = ManagedRuntime.make(AppLayer);
 
