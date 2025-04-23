@@ -16,6 +16,7 @@ import {
   Duration,
   ParseResult,
   ManagedRuntime,
+  Scope,
 } from "effect";
 import http from "http"; // Add Node.js http module
 
@@ -554,6 +555,14 @@ class MenuQueueService extends Effect.Service<MenuQueueService>()(
 
       yield* Effect.forkDaemon(worker);
 
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          yield* Effect.log("MenuQueueService: Shutting down...");
+          yield* Effect.log(`storing queue into persistent storage...`);
+          yield* Queue.shutdown(queue);
+        })
+      );
+
       return {
         enqueue: Effect.fn("enqueue")(function* () {
           const deferred = yield* Deferred.make<DomainMenu, MenuServiceError>();
@@ -595,11 +604,11 @@ const NodeSdkLive = NodeSdk.layer(() => ({
   // spanProcessor: new SentrySpanProcessor(),
 }));
 
-const AppLayer = Layer.provide(MenuQueueService.Default, ServiceLayer)
-  .pipe
+const AppLayer = Layer.provide(MenuQueueService.Default, ServiceLayer).pipe(
+  Layer.provide(Layer.scope)
   // Layer.provide(NodeSdkLive)
   // Layer.provide(Logger.pretty)
-  ();
+);
 
 const runtime = ManagedRuntime.make(AppLayer);
 
